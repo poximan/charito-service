@@ -71,6 +71,7 @@ class CharitoPoller:
         used_ratio = None
         if total_mem and free_mem is not None:
             used_ratio = 1.0 - (free_mem / max(total_mem, 1))
+        network_info = self._extract_interfaces(metrics)
         payload = {
             "instanceId": instance_id,
             "generatedAt": metrics.get("timestamp", _utc_now_iso()),
@@ -81,12 +82,13 @@ class CharitoPoller:
             "averageMemoryUsageRatio": used_ratio if used_ratio is not None else -1.0,
             "averageFreeMemoryBytes": free_mem,
             "averageTotalMemoryBytes": total_mem,
-            "latestSample": self._latest_sample(metrics),
+            "networkInterfaces": network_info,
+            "latestSample": self._latest_sample(metrics, network_info),
         }
         return payload
 
-    def _latest_sample(self, metrics: dict) -> dict:
-        return {
+    def _latest_sample(self, metrics: dict, network_info: list | None = None) -> dict:
+        sample = {
             "timestamp": metrics.get("timestamp"),
             "cpuLoad": metrics.get("cpuLoad"),
             "cpuTemperatureCelsius": metrics.get("cpuTemperatureCelsius"),
@@ -94,6 +96,8 @@ class CharitoPoller:
             "freeMemoryBytes": metrics.get("freeMemoryBytes"),
             "watchedProcesses": metrics.get("watchedProcesses", []),
         }
+        sample["networkInterfaces"] = network_info if network_info is not None else self._extract_interfaces(metrics)
+        return sample
 
     def _ensure_identity(self, target: Target) -> str | None:
         cached = self._identities.get(target.identity_url)
@@ -115,3 +119,34 @@ class CharitoPoller:
         if not self._identities:
             return
         self._state.prune(self._identities.values())
+
+    def _extract_interfaces(self, metrics: dict) -> list:
+        interfaces = metrics.get("networkInterfaces") or []
+        cleaned: list = []
+        for entry in interfaces:
+            if not isinstance(entry, dict):
+                continue
+            addresses = []
+            for info in entry.get("addresses") or []:
+                if not isinstance(info, dict):
+                    continue
+                address = str(info.get("address") or "").strip()
+                netmask = str(info.get("netmask") or "").strip()
+                addresses.append(
+                    {
+                        "address": address,
+                        "netmask": netmask,
+                    }
+                )
+            cleaned.append(
+                {
+                    "name": str(entry.get("name") or ""),
+                    "displayName": str(entry.get("displayName") or ""),
+                    "path": str(entry.get("path") or ""),
+                    "macAddress": str(entry.get("macAddress") or ""),
+                    "up": bool(entry.get("up")),
+                    "virtual": bool(entry.get("virtual")),
+                    "addresses": addresses,
+                }
+            )
+        return cleaned
