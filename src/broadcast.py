@@ -14,32 +14,41 @@ MQTT_TOPIC = "charito/whitelist/instances"
 
 _lock = threading.RLock()
 _client: mqtt.Client | None = None
-_published = False
+_last_payload: str | None = None
 
 
-def broadcast_whitelist(targets: Iterable[Target]) -> None:
-    global _published
-    if _published:
-        return
-
+def broadcast_whitelist(targets: Iterable[Target], overrides: dict[str, str] | None = None) -> None:
     items = []
     for target in targets:
-        instance_id = target.instance_id
+        alias = target.alias
+        resolved = overrides.get(target.identity_url) if overrides else None
+        instance_id = resolved or target.instance_id
+        provisional = False
         if not instance_id:
             try:
                 instance_id = fetch_instance_id(target, _http_timeout())
             except Exception:
-                continue
-        instance_id = instance_id.strip()
-        if instance_id:
-            items.append({"instanceId": instance_id})
+                instance_id = None
+        if not instance_id:
+            instance_id = alias
+            provisional = True
+        entry = {
+            "instanceId": instance_id.strip(),
+            "alias": alias,
+            "provisional": provisional,
+        }
+        items.append(entry)
 
     if not items:
         return
 
     payload = {"ts": _utc_now_iso(), "items": items}
-    _publish_once(json.dumps(payload, ensure_ascii=False))
-    _published = True
+    body = json.dumps(payload, ensure_ascii=False)
+    global _last_payload
+    if _last_payload == body:
+        return
+    _publish_once(body)
+    _last_payload = body
 
 
 def _publish_once(body: str) -> None:

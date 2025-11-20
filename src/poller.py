@@ -8,6 +8,7 @@ import requests
 from config import Target
 from identity import fetch_instance_id
 from state import StateStore, _utc_now_iso
+from broadcast import broadcast_whitelist
 
 
 class CharitoPoller:
@@ -24,6 +25,16 @@ class CharitoPoller:
         self._timeout = max(1.0, request_timeout)
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._registry: dict[str, dict] = {}
+        for target in self._targets:
+            key = target.tracking_key
+            self._registry[target.identity_url] = {
+                "target": target,
+                "key": key,
+                "alias": target.alias,
+                "resolved": bool(target.instance_id),
+            }
+            self._state.ensure_placeholder(key, target.alias)
         self._identities: dict[str, str] = {
             target.identity_url: target.instance_id
             for target in self._targets
@@ -51,19 +62,25 @@ class CharitoPoller:
             self._stop.wait(self._interval)
 
     def _poll_target(self, target: Target) -> None:
+        registry = self._registry.get(target.identity_url) or {}
+        key_hint = registry.get("key") or target.tracking_key
+        alias = registry.get("alias") or target.alias
         instance_id = self._ensure_identity(target)
-        if instance_id is None:
-            return
+        effective_id = instance_id or key_hint
         try:
             response = requests.get(target.metrics_url, timeout=self._timeout)
             response.raise_for_status()
             metrics = response.json()
-            payload = self._build_payload(instance_id, metrics)
-            self._state.upsert_online(payload)
+            payload = self._build_payload(effective_id, metrics, alias)
+            self._state.upsert_online(payload, key_hint=key_hint, alias=alias)
+            if instance_id and not registry.get("resolved"):
+                registry["resolved"] = True
+                registry["key"] = instance_id
+                broadcast_whitelist(self._targets, overrides=self._current_keys())
         except Exception:
-            self._state.mark_offline(instance_id)
+            self._state.mark_offline(effective_id, alias=alias)
 
-    def _build_payload(self, instance_id: str, metrics: dict) -> dict:
+    def _build_payload(self, instance_id: str, metrics: dict, alias: str) -> dict:
         cpu_load = metrics.get("cpuLoad", -1.0)
         cpu_temp = metrics.get("cpuTemperatureCelsius", -1.0)
         total_mem = metrics.get("totalMemoryBytes", 0)
@@ -74,6 +91,7 @@ class CharitoPoller:
         network_info = self._extract_interfaces(metrics)
         payload = {
             "instanceId": instance_id,
+            "alias": alias,
             "generatedAt": metrics.get("timestamp", _utc_now_iso()),
             "samples": 1,
             "windowSeconds": self._interval,
@@ -100,8 +118,13 @@ class CharitoPoller:
         return sample
 
     def _ensure_identity(self, target: Target) -> str | None:
+        registry = self._registry.get(target.identity_url) or {}
+        if registry.get("resolved"):
+            return registry.get("key")
         cached = self._identities.get(target.identity_url)
         if cached:
+            registry["resolved"] = True
+            registry["key"] = cached
             return cached
         try:
             instance_id = fetch_instance_id(target, self._timeout)
@@ -112,13 +135,20 @@ class CharitoPoller:
             self._log.warning("Endpoint de identidad no devolvio instanceId en %s", target.identity_url)
             return None
         self._identities[target.identity_url] = instance_id
+        registry["resolved"] = True
+        registry["key"] = instance_id
+        broadcast_whitelist(self._targets, overrides=self._current_keys())
         self._prune_known_instances()
         return instance_id
 
     def _prune_known_instances(self) -> None:
-        if not self._identities:
+        allowed = [entry["key"] for entry in self._registry.values() if entry.get("key")]
+        if not allowed:
             return
-        self._state.prune(self._identities.values())
+        self._state.prune(allowed)
+
+    def _current_keys(self) -> dict[str, str]:
+        return {identity_url: entry["key"] for identity_url, entry in self._registry.items() if entry.get("key")}
 
     def _extract_interfaces(self, metrics: dict) -> list:
         interfaces = metrics.get("networkInterfaces") or []

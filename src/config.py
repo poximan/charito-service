@@ -6,12 +6,21 @@ from typing import List, Optional
 
 @dataclass(frozen=True)
 class Target:
+    alias: str
     instance_id: Optional[str]
     metrics_url: str
     identity_url: str
 
+    @property
+    def tracking_key(self) -> str:
+        return self.instance_id or self.alias
+
     @staticmethod
     def from_dict(entry: dict) -> "Target":
+        alias_raw = entry.get("alias")
+        if not alias_raw or not str(alias_raw).strip():
+            raise ValueError("Cada instancia debe definir 'alias'")
+        alias = str(alias_raw).strip()
         instance_id_raw = entry.get("id")
         instance_id = str(instance_id_raw).strip() if instance_id_raw else None
         base_url = str(entry.get("baseUrl") or entry.get("url") or "").strip()
@@ -26,7 +35,7 @@ class Target:
         base_url = base_url.rstrip("/")
         metrics_url = f"{base_url}{metrics_path}"
         identity_url = f"{base_url}{identity_path}"
-        return Target(instance_id=instance_id, metrics_url=metrics_url, identity_url=identity_url)
+        return Target(alias=alias, instance_id=instance_id, metrics_url=metrics_url, identity_url=identity_url)
 
 
 def load_targets(path: str) -> List[Target]:

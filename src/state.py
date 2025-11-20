@@ -34,18 +34,30 @@ class StateStore:
         tmp.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
         tmp.replace(self._data_path)
 
-    def upsert_online(self, payload: Dict) -> None:
+    def upsert_online(self, payload: Dict, key_hint: Optional[str] = None, alias: Optional[str] = None) -> None:
         instance_id = str(payload.get("instanceId") or "").strip()
-        if not instance_id:
+        key_candidate = str(key_hint or instance_id or "").strip()
+        if not key_candidate:
             return
+        key = instance_id or key_candidate
+        payload = dict(payload)
+        payload["instanceId"] = key
         payload["status"] = "online"
         payload["receivedAt"] = _utc_now_iso()
+        if alias:
+            payload.setdefault("alias", alias)
         with self._lock:
-            self._items[instance_id] = payload
+            placeholder = None
+            if instance_id and key_candidate and key_candidate != key and key_candidate in self._items:
+                placeholder = self._items.pop(key_candidate, None)
+            if placeholder and "alias" in placeholder:
+                payload.setdefault("alias", placeholder.get("alias"))
+            payload.setdefault("alias", key)
+            self._items[key] = payload
             self._persist()
 
-    def mark_offline(self, instance_id: str) -> None:
-        iid = str(instance_id).strip()
+    def mark_offline(self, instance_id: str, alias: Optional[str] = None) -> None:
+        iid = str(instance_id or "").strip()
         if not iid:
             return
         with self._lock:
@@ -55,7 +67,30 @@ class StateStore:
             entry.setdefault("samples", 0)
             entry.setdefault("windowSeconds", 0)
             entry.setdefault("latestSample", {})
+            if alias:
+                entry.setdefault("alias", alias)
+            else:
+                entry.setdefault("alias", iid)
             self._items[iid] = entry
+            self._persist()
+
+    def ensure_placeholder(self, instance_id: str, alias: str) -> None:
+        key = str(instance_id or "").strip()
+        if not key:
+            return
+        with self._lock:
+            entry = self._items.get(key)
+            if not entry:
+                entry = {
+                    "instanceId": key,
+                    "status": "offline",
+                    "samples": 0,
+                    "windowSeconds": 0,
+                    "latestSample": {},
+                }
+            entry.setdefault("alias", alias or key)
+            entry.setdefault("receivedAt", _utc_now_iso())
+            self._items[key] = entry
             self._persist()
 
     def build_state(self, requested_ids: Optional[Iterable[str]] = None) -> Dict:
