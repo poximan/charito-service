@@ -38,11 +38,20 @@ class Target:
         return Target(alias=alias, instance_id=instance_id, metrics_url=metrics_url, identity_url=identity_url)
 
 
-def load_targets(path: str) -> List[Target]:
+@dataclass(frozen=True)
+class ServiceConfig:
+    poll_interval_seconds: int
+    http_timeout_seconds: float
+    instances: List[Target]
+
+
+def load_service_config(path: str) -> ServiceConfig:
     file_path = Path(path)
     if not file_path.exists():
         raise FileNotFoundError(f"No se encuentra el archivo de targets: {file_path}")
     data = json.loads(file_path.read_text(encoding="utf-8"))
+    poll_interval = int(data.get("pollIntervalSeconds") or 20)
+    http_timeout = float(data.get("httpTimeoutSeconds") or 4.0)
     items = data.get("instances")
     if not isinstance(items, list) or not items:
         raise ValueError("El archivo de targets debe contener una lista 'instances'")
@@ -53,4 +62,12 @@ def load_targets(path: str) -> List[Target]:
         targets.append(Target.from_dict(entry))
     if not targets:
         raise ValueError("La lista de instancias esta vacia")
-    return targets
+    return ServiceConfig(
+        poll_interval_seconds=poll_interval,
+        http_timeout_seconds=http_timeout,
+        instances=targets,
+    )
+
+
+def load_targets(path: str) -> List[Target]:
+    return load_service_config(path).instances

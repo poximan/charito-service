@@ -4,7 +4,7 @@ from typing import Optional
 
 from fastapi import FastAPI, HTTPException
 
-from config import load_targets
+from config import load_service_config
 from broadcast import broadcast_whitelist
 from poller import CharitoPoller
 from state import StateStore
@@ -33,14 +33,15 @@ def _env_float(name: str, default: float) -> float:
 DATA_DIR = Path(os.getenv("CHARITO_DATA_DIR", "/app/data"))
 STATE_FILE = Path(os.getenv("CHARITO_STATE_FILE", DATA_DIR / "charito-state.json"))
 TARGETS_FILE = os.getenv("CHARITO_TARGETS_FILE", "config/targets.json")
-POLL_INTERVAL = _env_int("CHARITO_POLL_INTERVAL_SECONDS", 20)
-HTTP_TIMEOUT = _env_float("CHARITO_HTTP_TIMEOUT_SECONDS", 4.0)
+service_cfg = load_service_config(TARGETS_FILE)
+POLL_INTERVAL = _env_int("CHARITO_POLL_INTERVAL_SECONDS", service_cfg.poll_interval_seconds)
+HTTP_TIMEOUT = _env_float("CHARITO_HTTP_TIMEOUT_SECONDS", service_cfg.http_timeout_seconds)
 
 app = FastAPI(title="charito-service", version="2.0.0")
 
 os.makedirs(DATA_DIR, exist_ok=True)
 state_store = StateStore(Path(STATE_FILE))
-targets = load_targets(TARGETS_FILE)
+targets = service_cfg.instances
 
 poller = CharitoPoller(
     targets=targets,

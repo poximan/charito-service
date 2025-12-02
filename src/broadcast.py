@@ -7,7 +7,9 @@ import paho.mqtt.client as mqtt
 
 from config import Target
 from identity import fetch_instance_id
-from state import _utc_now_iso
+from timeauthority import get_time_authority
+
+_AUTH = get_time_authority()
 
 
 MQTT_TOPIC = "charito/whitelist/instances"
@@ -42,7 +44,7 @@ def broadcast_whitelist(targets: Iterable[Target], overrides: dict[str, str] | N
     if not items:
         return
 
-    payload = {"ts": _utc_now_iso(), "items": items}
+    payload = {"ts": _AUTH.utc_iso(), "items": items}
     body = json.dumps(payload, ensure_ascii=False)
     global _last_payload
     if _last_payload == body:

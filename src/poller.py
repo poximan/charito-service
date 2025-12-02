@@ -7,8 +7,11 @@ import requests
 
 from config import Target
 from identity import fetch_instance_id
-from state import StateStore, _utc_now_iso
+from timeauthority import get_time_authority
+from state import StateStore
 from broadcast import broadcast_whitelist
+
+_AUTH = get_time_authority()
 
 
 class CharitoPoller:
@@ -81,27 +84,49 @@ class CharitoPoller:
             self._state.mark_offline(effective_id, alias=alias)
 
     def _build_payload(self, instance_id: str, metrics: dict, alias: str) -> dict:
-        cpu_load = metrics.get("cpuLoad", -1.0)
-        cpu_temp = metrics.get("cpuTemperatureCelsius", -1.0)
-        total_mem = metrics.get("totalMemoryBytes", 0)
-        free_mem = metrics.get("freeMemoryBytes", 0)
-        used_ratio = None
-        if total_mem and free_mem is not None:
-            used_ratio = 1.0 - (free_mem / max(total_mem, 1))
-        network_info = self._extract_interfaces(metrics)
+        network_info = metrics.get("networkInterfaces")
+        if not isinstance(network_info, list):
+            network_info = self._extract_interfaces(metrics)
+        latest = metrics.get("latestSample")
+        if not isinstance(latest, dict):
+            latest = self._latest_sample(metrics, network_info)
+        else:
+            latest.setdefault("networkInterfaces", network_info)
+        samples = int(metrics["samples"])
+        window_seconds = int(metrics["windowSeconds"])
+        timeout_seconds = int(metrics["timeoutSeconds"])
+        cpu_avg = float(metrics["averageCpuLoad"])
+        cpu_inst = float(metrics["cpuLoadInstant"])
+        temp_avg = float(metrics["averageCpuTemperatureCelsius"])
+        temp_inst = float(metrics["cpuTemperatureInstant"])
+        mem_avg = float(metrics["averageMemoryUsageRatio"])
+        mem_inst = float(metrics["memoryUsageInstant"])
+        free_avg = int(metrics["averageFreeMemoryBytes"])
+        total_avg = int(metrics["averageTotalMemoryBytes"])
+        free_inst = int(metrics["freeMemoryBytesInstant"])
+        total_inst = int(metrics["totalMemoryBytesInstant"])
         payload = {
             "instanceId": instance_id,
             "alias": alias,
-            "generatedAt": metrics.get("timestamp", _utc_now_iso()),
-            "samples": 1,
-            "windowSeconds": self._interval,
-            "averageCpuLoad": cpu_load,
-            "averageCpuTemperatureCelsius": cpu_temp,
-            "averageMemoryUsageRatio": used_ratio if used_ratio is not None else -1.0,
-            "averageFreeMemoryBytes": free_mem,
-            "averageTotalMemoryBytes": total_mem,
+            "status": "online",
+            "generatedAt": metrics.get("generatedAt") or metrics.get("timestamp") or _AUTH.utc_iso(),
+            "receivedAt": _AUTH.utc_iso(),
+            "samples": samples,
+            "windowSeconds": window_seconds,
+            "timeoutSeconds": timeout_seconds,
+            "averageCpuLoad": cpu_avg,
+            "cpuLoadInstant": cpu_inst,
+            "averageCpuTemperatureCelsius": temp_avg,
+            "cpuTemperatureInstant": temp_inst,
+            "averageMemoryUsageRatio": mem_avg,
+            "memoryUsageInstant": mem_inst,
+            "averageFreeMemoryBytes": free_avg,
+            "averageTotalMemoryBytes": total_avg,
+            "freeMemoryBytesInstant": free_inst,
+            "totalMemoryBytesInstant": total_inst,
             "networkInterfaces": network_info,
-            "latestSample": self._latest_sample(metrics, network_info),
+            "watchedProcesses": latest.get("watchedProcesses", []),
+            "latestSample": latest,
         }
         return payload
 

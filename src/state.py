@@ -1,12 +1,11 @@
 import json
 import threading
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
+from timeauthority import get_time_authority
 
-def _utc_now_iso() -> str:
-    return datetime.utcnow().replace(microsecond=0, tzinfo=timezone.utc).isoformat().replace("+00:00", "Z")
+_AUTH = get_time_authority()
 
 
 class StateStore:
@@ -29,10 +28,11 @@ class StateStore:
             self._items.clear()
 
     def _persist(self) -> None:
-        snapshot = {"ts": _utc_now_iso(), "items": list(self._items.values())}
-        tmp = self._data_path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp.replace(self._data_path)
+        snapshot = {"ts": _AUTH.utc_iso(), "items": list(self._items.values())}
+        self._data_path.write_text(
+            json.dumps(snapshot, ensure_ascii=False, indent=2),
+            encoding="utf-8"
+        )
 
     def upsert_online(self, payload: Dict, key_hint: Optional[str] = None, alias: Optional[str] = None) -> None:
         instance_id = str(payload.get("instanceId") or "").strip()
@@ -43,7 +43,7 @@ class StateStore:
         payload = dict(payload)
         payload["instanceId"] = key
         payload["status"] = "online"
-        payload["receivedAt"] = _utc_now_iso()
+        payload["receivedAt"] = _AUTH.utc_iso()
         if alias:
             payload.setdefault("alias", alias)
         with self._lock:
@@ -63,9 +63,10 @@ class StateStore:
         with self._lock:
             entry = self._items.get(iid, {"instanceId": iid})
             entry["status"] = "offline"
-            entry["receivedAt"] = _utc_now_iso()
+            entry["receivedAt"] = _AUTH.utc_iso()
             entry.setdefault("samples", 0)
             entry.setdefault("windowSeconds", 0)
+            entry.setdefault("timeoutSeconds", 0)
             entry.setdefault("latestSample", {})
             if alias:
                 entry.setdefault("alias", alias)
@@ -86,10 +87,11 @@ class StateStore:
                     "status": "offline",
                     "samples": 0,
                     "windowSeconds": 0,
+                    "timeoutSeconds": 0,
                     "latestSample": {},
                 }
             entry.setdefault("alias", alias or key)
-            entry.setdefault("receivedAt", _utc_now_iso())
+            entry.setdefault("receivedAt", _AUTH.utc_iso())
             self._items[key] = entry
             self._persist()
 
@@ -100,16 +102,13 @@ class StateStore:
                 items = [self._items[iid] for iid in sorted(self._items) if iid in wanted]
             else:
                 items = [self._items[iid] for iid in sorted(self._items)]
-        return {"ts": _utc_now_iso(), "items": items}
+        return {"ts": _AUTH.utc_iso(), "items": items}
 
     def build_index(self, since_iso: Optional[str]) -> Dict:
         since_dt = None
         if since_iso:
             try:
-                value = since_iso
-                if value.endswith("Z"):
-                    value = value[:-1] + "+00:00"
-                since_dt = datetime.fromisoformat(value)
+                since_dt = _AUTH.parse(since_iso)
             except Exception:
                 since_dt = None
 
@@ -120,10 +119,7 @@ class StateStore:
                 include = True
                 if since_dt and isinstance(received, str) and received:
                     try:
-                        value = received
-                        if value.endswith("Z"):
-                            value = value[:-1] + "+00:00"
-                        dt = datetime.fromisoformat(value)
+                        dt = _AUTH.parse(received)
                         include = dt > since_dt
                     except Exception:
                         include = True
@@ -135,7 +131,7 @@ class StateStore:
                                 "receivedAt": entry.get("receivedAt"),
                             }
                     )
-        return {"ts": _utc_now_iso(), "items": selected}
+        return {"ts": _AUTH.utc_iso(), "items": selected}
 
     def prune(self, allowed_ids: Iterable[str]) -> None:
         allowed = {str(iid).strip() for iid in allowed_ids if str(iid).strip()}

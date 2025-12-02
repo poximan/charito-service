@@ -1,12 +1,15 @@
-FROM python:3.11-slim
+FROM python:3.12-slim
+
+RUN useradd --create-home --shell /bin/bash charito
 
 WORKDIR /app
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY timeauthority-pkg /timeauthority-pkg
+COPY charito-service/requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt
 
-COPY src /app/src
-COPY config /app/config
+COPY charito-service/src /app/src
+COPY charito-service/config /app/config
 
 ENV PYTHONPATH=/app/src
 
